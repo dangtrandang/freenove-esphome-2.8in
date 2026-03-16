@@ -1,0 +1,464 @@
+substitutions:
+  name: "freenove-assistant"
+  friendly_name: "Freenove 2.8 Assistant"
+  wifi_ssid: "Tho Con"
+  wifi_password: "19072015"
+  # Bảng mã Full ASCII + Tiếng Việt - Deduplicated
+  viet_glyphs: '!"#$%&''()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềểễếệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ '
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - delay: 800ms
+      - lambda: |-
+          // --- Khởi tạo xoay màn hình dựa trên giá trị đã lưu ---
+          if (id(rotation_setting) == 0) id(my_display).set_rotation(display::DISPLAY_ROTATION_0_DEGREES);
+          else if (id(rotation_setting) == 90) id(my_display).set_rotation(display::DISPLAY_ROTATION_90_DEGREES);
+          else if (id(rotation_setting) == 180) id(my_display).set_rotation(display::DISPLAY_ROTATION_180_DEGREES);
+          else id(my_display).set_rotation(display::DISPLAY_ROTATION_270_DEGREES);
+          id(my_display).update();
+
+          // --- ES8311 HIFI OPTIMIZATION ---
+          id(es8311_dac).write_byte(0x00, 0x1F); delay(20);
+          id(es8311_dac).write_byte(0x00, 0x00);
+          id(es8311_dac).write_byte(0x00, 0x80); 
+          id(es8311_dac).write_byte(0x0D, 0x01); 
+          id(es8311_dac).write_byte(0x0E, 0x02); 
+          id(es8311_dac).write_byte(0x12, 0x00); 
+          id(es8311_dac).write_byte(0x13, 0x10); 
+          id(es8311_dac).write_byte(0x14, 0x1A); 
+          id(es8311_dac).write_byte(0x16, 0x03); // 18dB
+          id(es8311_dac).write_byte(0x17, 0xC8); 
+          id(es8311_dac).write_byte(0x1C, 0x6A); 
+          id(es8311_dac).write_byte(0x37, 0x08); // Bypass DAC EQ
+          id(es8311_dac).write_byte(0x32, 0xBF); // 0dB volume
+          uint8_t r31; id(es8311_dac).read_byte(0x31, &r31);
+          r31 &= ~(0x60); id(es8311_dac).write_byte(0x31, r31); 
+          id(es8311_dac).write_byte(0x30, 0x00); // Unmute
+          id(amplifier_enable).turn_on(); // Ensure amp is power-supplied
+          delay(50);
+          id(amplifier_enable).turn_off();
+          ESP_LOGI("boot", "SUPER-SPEED HANDOVER READY");
+      - wait_until: api.connected
+      - script.execute: safe_start_mww
+      - script.execute: timeout_timer
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  framework: { type: esp-idf }
+  flash_size: 16MB
+
+psram: { mode: octal, speed: 80MHz }
+
+wifi:
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+
+web_server:
+  port: 80
+ota:
+  - platform: esphome
+
+api:
+logger: { level: DEBUG }
+
+globals:
+  - id: va_status
+    type: std::string
+    initial_value: '"Sẵn Sàng"'
+  - id: stt_text
+    type: std::string
+    initial_value: '""'
+  - id: tts_text
+    type: std::string
+    initial_value: '""'
+  - id: volume_pct
+    type: int
+    initial_value: '80'
+    restore_value: true
+  - id: brightness_pct
+    type: int
+    initial_value: '100'
+    restore_value: true
+  - id: rotation_setting
+    type: int
+    initial_value: '270'
+    restore_value: true
+  - id: timeout_enabled
+    type: bool
+    initial_value: 'true'
+    restore_value: true
+  - id: timeout_duration
+    type: int
+    initial_value: '30' # Mặc định 30s
+    restore_value: true
+  - id: screen_is_on
+    type: bool
+    initial_value: 'true'
+
+i2c: { sda: 16, scl: 15, scan: true, id: bus_a }
+
+spi:
+  id: spi_bus0
+  clk_pin: 12
+  mosi_pin: 11
+  miso_pin: 13
+
+touchscreen:
+  - platform: ft63x6
+    id: my_touch
+    i2c_id: bus_a
+    # interrupt_pin: GPIO17 # Thường là 17 trên board này, nhưng bạn không nhắc chân này nên tôi để tự động hoặc bỏ qua reset
+    on_touch:
+      - script.execute: screen_wake
+
+display:
+  - platform: ili9xxx
+    model: ILI9341
+    id: my_display
+    spi_id: spi_bus0
+    cs_pin: 10
+    dc_pin: { number: 46, ignore_strapping_warning: true }
+    rotation: 270
+    invert_colors: true
+    lambda: |-
+      it.fill(id(color_bg));
+      it.print(160, 15, id(font_title), id(color_white), TextAlign::TOP_CENTER, "TRỢ LÝ FREENOVE");
+      
+      it.print(160, 50, id(font_status), id(color_yellow), TextAlign::TOP_CENTER, id(va_status).c_str());
+      
+      if (!id(stt_text).empty()) {
+        it.printf(160, 90, id(font_small), id(color_white), TextAlign::TOP_CENTER, "Bạn: %s", id(stt_text).c_str());
+      }
+      
+      if (!id(tts_text).empty()) {
+        it.printf(160, 130, id(font_small), id(color_yellow), TextAlign::TOP_CENTER, "Trợ lý: %s", id(tts_text).c_str());
+      }
+
+      std::string ip_str = "WIFI: KẾT NỐI...";
+      if (id(wifi_ip).has_state()) ip_str = id(wifi_ip).state;
+
+      it.printf(160, 215, id(font_small), id(color_gray), TextAlign::BOTTOM_CENTER, 
+                "IP: %s | %s | %.2fV", 
+                ip_str.c_str(),
+                id(mww).is_running() ? "Mic: BẬT" : "Mic: TẮT", 
+                id(battery_val).state);
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_title
+    size: 24
+    glyphs: ${viet_glyphs}
+  - file: "gfonts://Roboto"
+    id: font_status
+    size: 28
+    glyphs: ${viet_glyphs}
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 16
+    glyphs: ${viet_glyphs}
+
+color:
+  - id: color_bg
+    red: 5%
+    green: 5%
+    blue: 10%
+  - id: color_white
+    red: 100%
+    green: 100%
+    blue: 100%
+  - id: color_yellow
+    red: 100%
+    green: 90%
+    blue: 0%
+  - id: color_gray
+    red: 50%
+    green: 50%
+    blue: 50%
+
+binary_sensor:
+  - platform: gpio
+    pin: { number: 0, inverted: true, mode: INPUT_PULLUP, ignore_strapping_warning: true }
+    id: boot_button
+    name: "Manual Trigger"
+    on_press:
+      - script.execute: screen_wake
+      - if:
+          condition: { lambda: 'return id(va_status) == "Sẵn Sàng";' }
+          then: [ voice_assistant.start: ]
+          else:
+            - voice_assistant.stop:
+            - script.execute: safe_start_mww
+
+script:
+  - id: safe_start_mww
+    mode: restart
+    then:
+      - wait_until:
+          and:
+            - not:
+                media_player.is_announcing: speaker_player
+            - not:
+                speaker.is_playing: my_speaker
+      - delay: 300ms 
+      - micro_wake_word.start:
+      - lambda: 'id(va_status) = "Sẵn Sàng";'
+      - light.turn_off: status_led
+
+  - id: screen_wake
+    mode: restart
+    then:
+      - lambda: 'id(screen_is_on) = true;'
+      - light.turn_on:
+          id: bl_led
+          brightness: !lambda "return id(brightness_pct) / 100.0f;"
+      - script.execute: timeout_timer
+
+  - id: timeout_timer
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return id(timeout_enabled);'
+          then:
+            - delay: !lambda "return id(timeout_duration) * 1000;"
+            # Chặn tắt màn hình nếu đang bận đàm thoại
+            - wait_until:
+                lambda: |-
+                  return id(va_status) == "Sẵn Sàng" || id(va_status) == "Lỗi!" || id(va_status) == "Chưa rõ";
+            - lambda: 'id(screen_is_on) = false;'
+            - light.turn_off: bl_led
+
+output:
+  - platform: ledc
+    pin: { number: 45, ignore_strapping_warning: true }
+    id: backlight_pwm
+
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    id: bl_led
+    restore_mode: ALWAYS_ON
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    pin: 42
+    num_leds: 1
+    chipset: WS2812
+    rgb_order: grb
+    effects:
+      - pulse: { name: "Thinking Pulse", transition_length: 300ms, update_interval: 300ms }
+
+# --- I2S AUDIO (Đồng bộ 24kHz cho TTS) ---
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: 7
+    i2s_bclk_pin: 5
+    i2s_mclk_pin: 4
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: bus_a
+    bits_per_sample: 16bit
+    sample_rate: 24000 # Tăng lên 24kHz theo Log
+    use_microphone: true
+
+speaker:
+  - platform: i2s_audio
+    id: my_speaker
+    i2s_audio_id: i2s_bus
+    dac_type: external
+    i2s_dout_pin: 8
+    sample_rate: 24000 # Đồng bộ 24kHz
+    audio_dac: es8311_dac
+    buffer_duration: 500ms 
+    timeout: 1000ms 
+
+microphone:
+  - platform: i2s_audio
+    id: my_mic
+    i2s_audio_id: i2s_bus
+    adc_type: external
+    i2s_din_pin: 6
+    pdm: false
+
+media_player:
+  - platform: speaker
+    id: speaker_player
+    announcement_pipeline:
+      speaker: my_speaker
+      format: MP3 
+      sample_rate: 24000 # Đồng bộ pipeline
+    on_play:
+      - micro_wake_word.stop: 
+      - switch.turn_on: amplifier_enable
+      # Robust Recovery: Unmute và Reset Gain ES8311 mỗi khi phát
+      - lambda: |-
+          id(es8311_dac).write_byte(0x32, (uint8_t)(0xBF * (100 - id(volume_pct)) / 100));
+          id(es8311_dac).write_byte(0x30, 0x00); // Unmute
+      - delay: 150ms 
+    on_idle:
+      - switch.turn_off: amplifier_enable
+      - script.execute: safe_start_mww
+
+micro_wake_word:
+  id: mww
+  microphone: my_mic
+  models: [ { model: "okay_nabu", probability_cutoff: 0.6 } ]
+  on_wake_word_detected: 
+    - script.execute: screen_wake
+    - voice_assistant.start:
+
+voice_assistant:
+  id: va
+  microphone: my_mic
+  media_player: speaker_player
+  micro_wake_word: mww
+  noise_suppression_level: 2 
+  auto_gain: 15dBFS 
+  on_listening:
+    - script.execute: screen_wake
+    - micro_wake_word.stop:
+    - switch.turn_off: amplifier_enable 
+    - lambda: |-
+        id(va_status) = "Đang Nghe...";
+        id(stt_text) = "";
+        id(tts_text) = "";
+    - light.turn_on: { id: status_led, red: 0%, green: 0%, blue: 100%, brightness: 80% }
+  on_stt_end:
+    - lambda: |-
+        id(stt_text) = x;
+        id(va_status) = x.length() > 2 ? "Xử lý..." : "Chưa rõ";
+  on_stt_vad_end:
+    - lambda: 'id(va_status) = "Xử lý...";'
+    - light.turn_on: { id: status_led, red: 100%, green: 100%, blue: 0%, effect: "Thinking Pulse" }
+  on_tts_start:
+    - script.execute: screen_wake
+    - micro_wake_word.stop: 
+    - switch.turn_on: amplifier_enable
+    - lambda: |-
+        id(va_status) = "Trả lời...";
+        id(tts_text) = x;
+    - light.turn_on: { id: status_led, red: 0%, green: 100%, blue: 100%, brightness: 50% }
+  on_end:
+    - delay: 200ms
+    - script.execute: safe_start_mww
+  on_error:
+    - lambda: 'id(va_status) = "Lỗi!";'
+    - light.turn_on: { id: status_led, red: 100%, green: 0%, blue: 0% }
+    - delay: 1s
+    - script.execute: safe_start_mww
+
+switch:
+  - platform: gpio
+    pin: { number: 1, inverted: true }
+    id: amplifier_enable
+    restore_mode: ALWAYS_OFF
+
+  - platform: template
+    name: "Tự động tắt màn hình (Timeout)"
+    id: timeout_switch
+    icon: "mdi:timer-sand"
+    optimistic: true
+    lambda: 'return id(timeout_enabled);'
+    turn_on_action:
+      - lambda: 'id(timeout_enabled) = true;'
+      - script.execute: timeout_timer
+    turn_off_action:
+      - lambda: 'id(timeout_enabled) = false;'
+      - script.execute: screen_wake
+
+sensor:
+  - platform: adc
+    pin: 9
+    id: battery_val
+    update_interval: 60s
+    unit_of_measurement: "V"
+    attenuation: 12db
+    filters:
+      - multiply: 2.0
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+
+button:
+  - platform: restart
+    name: "Khởi động lại thiết bị (Reboot)"
+    id: reboot_btn
+
+  - platform: template
+    name: "Xoay màn hình (90 độ)"
+    id: rotate_button
+    icon: "mdi:rotate-right"
+    on_press:
+      - script.execute: screen_wake
+      - lambda: |-
+          id(rotation_setting) = (id(rotation_setting) + 90) % 360;
+          if (id(rotation_setting) == 0) id(my_display).set_rotation(display::DISPLAY_ROTATION_0_DEGREES);
+          else if (id(rotation_setting) == 90) id(my_display).set_rotation(display::DISPLAY_ROTATION_90_DEGREES);
+          else if (id(rotation_setting) == 180) id(my_display).set_rotation(display::DISPLAY_ROTATION_180_DEGREES);
+          else id(my_display).set_rotation(display::DISPLAY_ROTATION_270_DEGREES);
+          id(my_display).update();
+
+  - platform: template
+    name: "Tắt màn hình ngay"
+    id: screen_off_btn
+    icon: "mdi:monitor-off"
+    on_press:
+      - lambda: 'id(screen_is_on) = false;'
+      - light.turn_off: bl_led
+
+number:
+  - platform: template
+    name: "Âm lượng (Volume)"
+    id: volume_slider
+    min_value: 0
+    max_value: 100
+    step: 5
+    unit_of_measurement: "%"
+    initial_value: 80
+    restore_value: true
+    set_action:
+      then:
+        - lambda: |-
+            id(volume_pct) = (int)x;
+            uint8_t reg_val = (uint8_t)(0xBF * (100 - id(volume_pct)) / 100);
+            id(es8311_dac).write_byte(0x32, reg_val);
+
+  - platform: template
+    name: "Độ sáng màn hình"
+    id: brightness_slider
+    min_value: 10
+    max_value: 100
+    step: 5
+    unit_of_measurement: "%"
+    initial_value: 100
+    restore_value: true
+    set_action:
+      then:
+        - script.execute: screen_wake
+        - lambda: |-
+            id(brightness_pct) = (int)x;
+            auto call = id(bl_led).make_call();
+            call.set_brightness(x / 100.0f);
+            call.perform();
+
+  - platform: template
+    name: "Thời gian chờ (Giây)"
+    id: timeout_duration_slider
+    min_value: 5
+    max_value: 60
+    step: 5
+    unit_of_measurement: "s"
+    initial_value: 30
+    restore_value: true
+    set_action:
+      then:
+        - lambda: 'id(timeout_duration) = (int)x;'
+        - script.execute: timeout_timer
