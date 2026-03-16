@@ -27,6 +27,7 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
+  esp32_restore_from_flash: true # Đảm bảo khôi phục các biến đã lưu sau khi mất nguồn
   on_boot:
     priority: -100
     then:
@@ -381,13 +382,13 @@ switch:
     name: "Tự động tắt màn hình (Timeout)"
     id: timeout_switch
     icon: "mdi:timer-sand"
-    optimistic: true
     lambda: 'return id(timeout_enabled);'
     turn_on_action:
       - lambda: 'id(timeout_enabled) = true;'
       - script.execute: timeout_timer
     turn_off_action:
       - lambda: 'id(timeout_enabled) = false;'
+      - script.stop: timeout_timer
       - script.execute: screen_wake
 
 sensor:
