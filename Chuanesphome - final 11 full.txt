@@ -139,7 +139,59 @@ display:
       }
       
       if (!id(tts_text).empty()) {
-        it.printf(cx, h * 0.55, id(font_small), id(color_yellow), TextAlign::TOP_CENTER, "Trợ lý: %s", id(tts_text).c_str());
+        int padding = 10;
+        int max_width = w - (padding * 4);
+        int box_y = h * 0.52;
+        
+        // --- Giới hạn 12 từ ---
+        std::string text = id(tts_text);
+        size_t pos = 0;
+        int word_count = 0;
+        while (word_count < 12 && (pos = text.find(' ', pos + 1)) != std::string::npos) {
+          word_count++;
+        }
+        if (pos != std::string::npos) {
+          text = text.substr(0, pos) + " ......";
+        }
+
+        // --- Thuật toán Wrap chữ tự động ---
+        std::string current_line = "";
+        std::vector<std::string> lines;
+        size_t start = 0, end = 0;
+        
+        while ((end = text.find(' ', start)) != std::string::npos) {
+          std::string word = text.substr(start, end - start);
+          int tw, th, tx, ty;
+          it.get_text_bounds(0, 0, (current_line + (current_line.empty() ? "" : " ") + word).c_str(), id(font_small), TextAlign::TOP_LEFT, &tx, &ty, &tw, &th);
+          
+          if (tw > max_width && !current_line.empty()) {
+            lines.push_back(current_line);
+            current_line = word;
+          } else {
+            if (!current_line.empty()) current_line += " ";
+            current_line += word;
+          }
+          start = end + 1;
+        }
+        // Thêm từ cuối cùng và kiểm tra xem có cần xuống dòng không
+        std::string last_word = text.substr(start);
+        int tw, th, tx, ty;
+        it.get_text_bounds(0, 0, (current_line + (current_line.empty() ? "" : " ") + last_word).c_str(), id(font_small), TextAlign::TOP_LEFT, &tx, &ty, &tw, &th);
+        if (tw > max_width && !current_line.empty()) {
+          lines.push_back(current_line);
+          lines.push_back(last_word);
+        } else {
+          lines.push_back(current_line + (current_line.empty() ? "" : " ") + last_word);
+        }
+        
+        // Vẽ khung (Frame)
+        int total_h = lines.size() * 18 + (padding * 2);
+        it.rectangle(padding, box_y, w - (padding * 2), total_h, id(color_yellow));
+        
+        // In từng dòng vào khung
+        for (size_t i = 0; i < lines.size(); i++) {
+          it.print(cx, box_y + padding + (i * 18), id(font_small), id(color_yellow), TextAlign::TOP_CENTER, lines[i].c_str());
+        }
       }
 
       std::string ip_str = "WIFI: KẾT NỐI...";
